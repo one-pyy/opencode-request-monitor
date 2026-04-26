@@ -1,0 +1,1446 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenCode Request Monitor</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: '#0ea5e9',
+            'brand-light': '#e0f2fe',
+            'brand-dark': '#0284c7',
+          },
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', 'sans-serif'],
+            mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'Liberation Mono', 'Courier New', 'monospace'],
+          },
+          boxShadow: {
+            'card': '0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03)',
+            'drawer': '-8px 0 30px rgba(0, 0, 0, 0.05)',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #f8fafc;
+      color: #334155;
+    }
+    
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+
+    .packet-item {
+      transition: all 0.15s ease;
+      border: 1px solid transparent;
+    }
+    .packet-item:hover {
+      background: #f1f5f9;
+      transform: translateY(-1px);
+    }
+    .packet-item.drop {
+      border-left: 3px solid #ef4444;
+    }
+    
+    /* Drawer transitions */
+    .drawer-overlay {
+      transition: opacity 0.3s ease;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .drawer-overlay.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    
+    .drawer-panel {
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+      transform: translateX(100%);
+    }
+    .drawer-panel.open {
+      transform: translateX(0);
+    }
+    
+    #diff-editor-container,
+    #single-editor-container {
+      min-height: 0;
+      height: 100%;
+      width: 100%;
+    }
+    
+    .monaco-editor {
+      padding-top: 8px;
+    }
+  </style>
+</head>
+<body class="min-h-screen flex flex-col font-sans antialiased text-sm">
+  <div class="p-6 md:p-8 flex flex-col gap-8 max-w-7xl mx-auto w-full h-screen">
+    
+    <!-- Topbar -->
+    <header class="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 shrink-0">
+      <div>
+        <h1 class="text-2xl font-bold text-slate-900 tracking-tight">Request Monitor</h1>
+        <p class="text-slate-500 mt-1.5 text-sm">持续查看真实请求、快速定位缓存异常并比对。</p>
+      </div>
+      <div class="flex gap-3 flex-wrap">
+        <button type="button" id="refreshBtn" class="px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors shadow-sm font-medium flex items-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          刷新
+        </button>
+        <button type="button" id="toggleFilterBtn" class="px-4 py-2 rounded-lg bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300 transition-colors shadow-sm font-medium flex items-center gap-2">
+          <svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg>
+          仅看异常包
+        </button>
+        <button type="button" id="clearHistoryBtn" class="px-4 py-2 rounded-lg bg-red-50 text-red-600 hover:bg-red-100 transition-colors shadow-sm font-medium flex items-center gap-2">
+          <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+          清空历史
+        </button>
+      </div>
+    </header>
+
+    <!-- Stats Grid -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 shrink-0" id="statsGrid">
+      <div class="bg-white rounded-xl p-5 border border-slate-100 shadow-card flex flex-col justify-center">
+        <div class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1.5">总包数</div>
+        <div class="text-3xl font-bold text-slate-800 tracking-tight" id="statTotal">-</div>
+      </div>
+      <div class="bg-white rounded-xl p-5 border border-slate-100 shadow-card flex flex-col justify-center">
+        <div class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1.5">异常包</div>
+        <div class="text-3xl font-bold text-red-500 tracking-tight" id="statDrop">-</div>
+      </div>
+      <div class="bg-white rounded-xl p-5 border border-slate-100 shadow-card flex flex-col justify-center">
+        <div class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1.5">可比较</div>
+        <div class="text-3xl font-bold text-brand tracking-tight" id="statComparable">-</div>
+      </div>
+      <div class="bg-white rounded-xl p-5 border border-slate-100 shadow-card flex flex-col justify-center">
+        <div class="text-slate-400 text-xs font-medium uppercase tracking-wider mb-1.5">最近抓包</div>
+        <div class="text-xl font-bold text-slate-700 mt-1" id="statLast">-</div>
+      </div>
+    </div>
+
+    <!-- Main Workspace -->
+    <div class="flex-1 flex flex-col min-h-0 bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+      
+      <!-- List Header -->
+      <div class="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center shrink-0">
+        <h3 class="font-semibold text-slate-800">请求序列</h3>
+        <span class="text-xs text-slate-500 bg-white border border-slate-200 px-2 py-1 rounded-md shadow-sm">点击查看详情</span>
+      </div>
+
+      <!-- Packet List -->
+      <div class="flex-1 overflow-y-auto p-4 flex flex-col gap-2" id="packetList">
+        <!-- Packet Items go here -->
+      </div>
+      
+    </div>
+  </div>
+
+  <!-- Full Page Drawer -->
+  <div id="drawerOverlay" class="drawer-overlay fixed inset-0 bg-slate-900/20 backdrop-blur-sm z-40"></div>
+  
+  <div id="drawerPanel" class="drawer-panel fixed top-0 right-0 h-full w-full bg-white shadow-drawer z-50 flex flex-col">
+    <!-- Drawer Header -->
+    <div class="flex items-center justify-between px-6 py-4 border-b border-slate-100 bg-white shrink-0">
+      <h2 class="text-lg font-bold text-slate-800" id="drawerTitle">请求详情</h2>
+      <button type="button" id="closeDrawerBtn" class="p-2 -mr-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-full transition-colors">
+        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+      </button>
+    </div>
+    
+    <!-- Drawer Content -->
+    <div class="flex-1 min-h-0 p-6 overflow-hidden flex flex-col" id="detailContainer">
+      <!-- Detail content injected here -->
+    </div>
+  </div>
+
+  <!-- Monaco Editor script -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js"></script>
+  <script>
+    require.config({ paths: { vs: 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
+
+    let monacoHttpLanguageRegistered = false;
+
+    const state = {
+      onlyCacheDrop: false,
+      packets: [],
+      activeId: null,
+      detailView: 'request_body',
+      rawMode: false,
+      monacoReady: false,
+      diffEditor: null,
+      diffOriginalModel: null,
+      diffModifiedModel: null,
+      detailEditor: null,
+      detailEditorModel: null,
+      resizeObserver: null,
+    };
+
+    const packetListEl = document.getElementById('packetList');
+    const detailContainerEl = document.getElementById('detailContainer');
+    const drawerOverlay = document.getElementById('drawerOverlay');
+    const drawerPanel = document.getElementById('drawerPanel');
+
+    // Drawer toggles
+    function openDrawer() {
+      drawerOverlay.classList.add('open');
+      drawerPanel.classList.add('open');
+      document.body.style.overflow = 'hidden';
+      // Layout editor after drawer opens
+      setTimeout(() => {
+        if (state.diffEditor) {
+          state.diffEditor.layout();
+        }
+      }, 350);
+    }
+
+    function closeDrawer() {
+      drawerOverlay.classList.remove('open');
+      drawerPanel.classList.remove('open');
+      document.body.style.overflow = '';
+      state.activeId = null;
+      renderPackets(); // 重新渲染以移除激活状态
+      
+      // Destroy monaco instance when closing to prevent memory leaks and UI bugs on reopening
+      setTimeout(() => {
+        if (!state.activeId && state.diffEditor) {
+          state.diffEditor.dispose();
+          state.diffEditor = null;
+        }
+        if (!state.activeId && state.detailEditor) {
+          state.detailEditor.dispose();
+          state.detailEditor = null;
+        }
+        if (!state.activeId && state.detailEditorModel) {
+          state.detailEditorModel.dispose();
+          state.detailEditorModel = null;
+        }
+      }, 300);
+    }
+
+    document.getElementById('closeDrawerBtn').addEventListener('click', closeDrawer);
+    drawerOverlay.addEventListener('click', closeDrawer);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && drawerPanel.classList.contains('open')) {
+        closeDrawer();
+      }
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', loadAll);
+    document.getElementById('toggleFilterBtn').addEventListener('click', () => {
+      state.onlyCacheDrop = !state.onlyCacheDrop;
+      const btn = document.getElementById('toggleFilterBtn');
+      if (state.onlyCacheDrop) {
+        btn.innerHTML = `<svg class="w-4 h-4 text-brand" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16m-7 6h7"></path></svg> 显示全部`;
+        btn.classList.add('bg-slate-50', 'border-slate-300');
+      } else {
+        btn.innerHTML = `<svg class="w-4 h-4 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z"></path></svg> 仅看异常包`;
+        btn.classList.remove('bg-slate-50', 'border-slate-300');
+      }
+      loadPackets();
+    });
+    document.getElementById('clearHistoryBtn').addEventListener('click', async () => {
+      const ok = window.confirm('确定清空当前所有抓包历史吗？');
+      if (!ok) return;
+      await fetch('/api/packets', { method: 'DELETE' });
+      state.activeId = null;
+      if (state.diffEditor) {
+        state.diffEditor.dispose();
+        state.diffEditor = null;
+      }
+      if (state.diffOriginalModel) {
+        state.diffOriginalModel.dispose();
+        state.diffOriginalModel = null;
+      }
+      if (state.diffModifiedModel) {
+        state.diffModifiedModel.dispose();
+        state.diffModifiedModel = null;
+      }
+      if (state.detailEditor) {
+        state.detailEditor.dispose();
+        state.detailEditor = null;
+      }
+      if (state.detailEditorModel) {
+        state.detailEditorModel.dispose();
+        state.detailEditorModel = null;
+      }
+      closeDrawer();
+      await loadAll();
+    });
+
+    require(['vs/editor/editor.main'], function () {
+      registerHttpRequestLanguage();
+      state.monacoReady = true;
+      loadAll();
+    });
+
+    async function loadAll() {
+      await Promise.all([loadStats(), loadPackets()]);
+    }
+
+    async function loadStats() {
+      try {
+        const res = await fetch('/api/stats/summary');
+        const data = await res.json();
+        document.getElementById('statTotal').textContent = data.total_packets;
+        document.getElementById('statDrop').textContent = data.cache_drop_packets;
+        document.getElementById('statComparable').textContent = data.comparable_packets;
+        document.getElementById('statLast').textContent = data.last_captured_at
+          ? new Date(data.last_captured_at).toLocaleTimeString()
+          : '-';
+      } catch (e) {
+        console.error('Failed to load stats', e);
+      }
+    }
+
+    async function loadPackets() {
+      try {
+        const url = new URL('/api/packets', window.location.origin);
+        if (state.onlyCacheDrop) url.searchParams.set('only_cache_drop', 'true');
+        const res = await fetch(url);
+        state.packets = await res.json();
+        renderPackets();
+      } catch (e) {
+        console.error('Failed to load packets', e);
+      }
+    }
+
+    function renderPackets() {
+      packetListEl.innerHTML = '';
+      
+      if (state.packets.length === 0) {
+        state.activeId = null;
+        packetListEl.innerHTML = `
+          <div class="flex flex-col items-center justify-center py-20 text-slate-400">
+            <svg class="w-12 h-12 mb-3 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+            <p>暂无抓包数据</p>
+          </div>
+        `;
+        if (drawerPanel.classList.contains('open')) {
+          detailContainerEl.innerHTML = `
+            <div class="flex flex-col items-center justify-center h-full py-20 text-slate-400">
+              <svg class="w-14 h-14 mb-4 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+              <p class="font-medium">历史记录已清空</p>
+            </div>
+          `;
+        }
+        return;
+      }
+
+      for (const packet of state.packets) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        
+        const isDrop = packet.is_cache_drop;
+        
+        item.className = `packet-item w-full text-left rounded-xl p-4 bg-white border flex flex-col gap-2.5 shadow-sm ${isDrop ? 'drop' : ''} ${state.activeId === packet.id ? 'border-brand bg-slate-50' : 'border-slate-200'}`;
+
+        const badges = [];
+        if (isDrop) badges.push('<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-red-50 text-red-600 border border-red-100">缓存异常</span>');
+        if (packet.compare_block_reason) badges.push(`<span class="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-amber-50 text-amber-600 border border-amber-100">${humanizeBlockReason(packet.compare_block_reason)}</span>`);
+
+        const methodColors = {
+          'GET': 'text-emerald-600 bg-emerald-50 border-emerald-200',
+          'POST': 'text-sky-600 bg-sky-50 border-sky-200',
+          'PUT': 'text-amber-600 bg-amber-50 border-amber-200',
+          'DELETE': 'text-red-600 bg-red-50 border-red-200',
+        };
+        const methodClass = methodColors[packet.method] || 'text-slate-600 bg-slate-100 border-slate-200';
+
+        item.innerHTML = `
+          <div class="flex justify-between items-center text-xs text-slate-500">
+            <span class="font-mono bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200 font-medium">#${packet.sequence}</span>
+            <span>${new Date(packet.captured_at).toLocaleString()}</span>
+          </div>
+          <div class="font-medium text-[15px] text-slate-800 leading-snug break-all flex items-start gap-2.5">
+            <span class="${methodClass} px-2 py-0.5 rounded border text-[11px] font-bold shrink-0 mt-0.5">${escapeHtml(packet.method)}</span>
+            <span class="line-clamp-2">${escapeHtml(packet.path)}</span>
+          </div>
+          ${badges.length > 0 ? `<div class="flex gap-1.5 flex-wrap">${badges.join('')}</div>` : ''}
+          <div class="flex items-center gap-4 text-xs text-slate-500 mt-2 pt-3 border-t border-slate-100">
+            <div class="flex flex-col">
+              <span class="text-slate-400 text-[10px] uppercase tracking-wider mb-0.5">Cached</span>
+              <span class="font-mono text-emerald-600 font-semibold text-sm">${packet.cached_tokens ?? '-'}</span>
+            </div>
+            <div class="w-px h-6 bg-slate-200"></div>
+            <div class="flex flex-col">
+              <span class="text-slate-400 text-[10px] uppercase tracking-wider mb-0.5">Total</span>
+              <span class="font-mono text-sky-600 font-semibold text-sm">${packet.total_tokens ?? '-'}</span>
+            </div>
+          </div>
+        `;
+        item.addEventListener('click', () => selectPacket(packet.id));
+        packetListEl.appendChild(item);
+      }
+    }
+
+    async function selectPacket(packetId) {
+      if (state.activeId === packetId && drawerPanel.classList.contains('open')) return;
+      
+      state.activeId = packetId;
+      state.detailView = 'request_body';
+      openDrawer();
+      renderPackets(); // 更新左侧选中状态
+
+      try {
+        detailContainerEl.innerHTML = `
+          <div class="flex justify-center items-center h-40">
+            <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-brand"></div>
+          </div>
+        `;
+
+        const [detailRes, diffRes] = await Promise.all([
+          fetch(`/api/packets/${packetId}`),
+          fetch(`/api/packets/${packetId}/diff-prev`),
+        ]);
+        const detail = await detailRes.json();
+        const diff = await diffRes.json();
+        
+        // 确保抽屉仍然是打开状态，且当前选中的是同一个 packet
+        if (state.activeId !== packetId) return;
+
+        document.getElementById('drawerTitle').innerHTML = `
+          <div class="flex items-center gap-3">
+            <span class="font-mono bg-slate-100 text-slate-500 px-2 py-0.5 rounded text-sm border border-slate-200">#${detail.sequence}</span>
+            <span>请求对比详情</span>
+          </div>
+        `;
+        
+        renderDetail(detail, diff);
+        mountActiveView(detail, diff);
+      } catch (e) {
+        console.error('Failed to load packet details', e);
+        detailContainerEl.innerHTML = `<div class="text-red-500 p-4 bg-red-50 rounded-lg border border-red-100">加载详情失败: ${e.message}</div>`;
+      }
+    }
+
+    function renderDetail(detail, diff) {
+      const badges = [];
+      if (detail.is_cache_drop) badges.push('<span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-red-50 text-red-600 border border-red-100"><svg class="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/></svg>缓存异常</span>');
+      if (detail.compare_block_reason) badges.push(`<span class="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-amber-50 text-amber-600 border border-amber-100"><svg class="w-3.5 h-3.5 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>${humanizeBlockReason(detail.compare_block_reason)}</span>`);
+      const detailViewTabs = [
+        { key: 'request_body', label: '发送内容' },
+        { key: 'response_body', label: '返回内容' },
+        { key: 'request_headers', label: '发送 header' },
+      ];
+      const detailViewButtons = detailViewTabs
+        .map(({ key, label }) => {
+          const isActive = state.detailView === key;
+          return `<button type="button" data-detail-view="${key}" class="detail-view-btn inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${isActive ? 'bg-brand text-white border-brand shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300'}">${label}</button>`;
+        })
+        .join('');
+      const activeViewMeta = getActiveViewMeta(detail, diff, state.detailView);
+      const rawModeButton = `<button type="button" id="toggleRawModeBtn" class="inline-flex items-center rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors ${state.rawMode ? 'bg-slate-900 text-white border-slate-900 shadow-sm' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 hover:border-slate-300'}">Raw</button>`;
+
+      detailContainerEl.innerHTML = `
+        <div class="flex flex-col gap-6 h-full min-h-0 overflow-hidden">
+          <!-- Meta Info -->
+          <div class="bg-white rounded-xl p-6 border border-slate-200 shadow-sm shrink-0">
+            <div class="flex flex-col gap-4">
+              <div class="flex items-start justify-between gap-4">
+                <h2 class="text-xl font-bold text-slate-800 leading-tight break-all font-mono">
+                  <span class="text-brand mr-2">${escapeHtml(detail.method)}</span>
+                  ${escapeHtml(detail.host)}${escapeHtml(detail.path)}
+                </h2>
+                ${badges.length > 0 ? `<div class="flex gap-2 flex-wrap shrink-0">${badges.join('')}</div>` : ''}
+              </div>
+              
+              <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mt-2">
+                <div class="bg-slate-50 rounded-lg p-3.5 border border-slate-100">
+                  <div class="text-slate-500 text-[11px] uppercase tracking-wider mb-1 font-medium">Cached Tokens</div>
+                  <div class="text-slate-800 font-semibold font-mono text-lg">${detail.cached_tokens ?? '-'}</div>
+                </div>
+                <div class="bg-slate-50 rounded-lg p-3.5 border border-slate-100">
+                  <div class="text-slate-500 text-[11px] uppercase tracking-wider mb-1 font-medium">Total Tokens</div>
+                  <div class="text-slate-800 font-semibold font-mono text-lg">${detail.total_tokens ?? '-'}</div>
+                </div>
+                <div class="bg-slate-50 rounded-lg p-3.5 border border-slate-100">
+                  <div class="text-slate-500 text-[11px] uppercase tracking-wider mb-1 font-medium">命中比例</div>
+                  <div class="text-slate-800 font-semibold font-mono text-lg">${detail.cache_ratio == null ? '-' : formatRatio(detail.cache_ratio)}</div>
+                </div>
+                <div class="bg-slate-50 rounded-lg p-3.5 border border-slate-100">
+                  <div class="text-slate-500 text-[11px] uppercase tracking-wider mb-1 font-medium">Host</div>
+                  <div class="text-slate-700 text-sm font-mono truncate mt-1" title="${escapeHtml(detail.host)}">${escapeHtml(detail.host)}</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="bg-white border border-slate-200 rounded-xl flex-1 flex flex-col shadow-sm min-h-0 overflow-hidden">
+            <div class="bg-slate-50 px-5 py-3.5 border-b border-slate-200 flex justify-between items-center shrink-0 rounded-t-xl">
+              <div>
+                <h3 class="font-semibold text-slate-800 text-sm">${escapeHtml(activeViewMeta.title)}</h3>
+                <p class="text-xs text-slate-500 mt-1">${escapeHtml(activeViewMeta.description)}</p>
+              </div>
+              <div class="flex flex-wrap gap-2 items-center justify-end">
+                ${rawModeButton}
+                <div class="flex flex-wrap gap-2 ${state.rawMode ? 'opacity-40 pointer-events-none' : ''}">${detailViewButtons}</div>
+                <span class="text-xs text-slate-500 bg-white px-2 py-1 rounded border border-slate-200">${escapeHtml(activeViewMeta.badge)}</span>
+              </div>
+            </div>
+            <div class="flex-1 min-h-0 relative flex flex-col rounded-b-xl overflow-hidden">
+              <div id="detail-main-panel" class="flex-1 min-h-0 bg-white"></div>
+            </div>
+          </div>
+        </div>
+      `;
+
+      detailContainerEl.querySelectorAll('[data-detail-view]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const nextView = button.getAttribute('data-detail-view');
+          if (!nextView || nextView === state.detailView) return;
+          state.detailView = nextView;
+          renderDetail(detail, diff);
+          mountActiveView(detail, diff);
+        });
+      });
+
+      const rawModeBtn = document.getElementById('toggleRawModeBtn');
+      rawModeBtn?.addEventListener('click', () => {
+        state.rawMode = !state.rawMode;
+        renderDetail(detail, diff);
+        mountActiveView(detail, diff);
+      });
+    }
+
+    function mountActiveView(detail, diff) {
+      if (state.rawMode) {
+        mountRawPacketView(detail);
+        return;
+      }
+      if (state.detailView === 'request_body') {
+        mountRequestDiff(detail, diff);
+        return;
+      }
+      const content = getDetailViewContent(detail, state.detailView);
+      mountSingleEditor(content);
+    }
+
+    function getActiveViewMeta(_detail, diff, view) {
+      if (state.rawMode) {
+        return {
+          title: 'Raw 报文',
+          description: '显示抓包时保存的原始 HTTP 请求与响应文本，不做格式化、摘要抽取或 diff 加工。',
+          badge: 'HTTP raw',
+        };
+      }
+      switch (view) {
+        case 'response_body':
+          return {
+            title: '返回内容',
+            description: '按流式协议拼合最终消息后，以 JSON5 形式显示当前请求的返回结果。',
+            badge: '单包 JSON5',
+          };
+        case 'request_headers':
+          return {
+            title: '发送 header',
+            description: '显示原始 HTTP 请求包，只保留请求行与 header，不包含请求体。',
+            badge: 'HTTP raw request',
+          };
+        default:
+          return {
+            title: '发送内容',
+            description: diff.status === 'comparable'
+              ? '与前一包对比发送内容，使用 JSON5 视图高亮变化。'
+              : `当前包不可比较：${humanizeBlockReason(diff.reason)}`,
+            badge: diff.status === 'comparable' ? 'JSON5 diff' : '不可比较',
+          };
+      }
+    }
+
+    function mountRawPacketView(detail) {
+      mountSingleEditor({
+        type: 'code',
+        language: 'http-request',
+        text: buildRawPacketText(detail),
+      });
+    }
+
+    function mountRequestDiff(detail, diff) {
+      const container = document.getElementById('detail-main-panel');
+      if (!container) return;
+      if (diff.status !== 'comparable') {
+        disposeDetailEditor();
+        disposeDiffEditor();
+        container.innerHTML = `<div class="flex h-full flex-col items-center justify-center p-16 text-center text-slate-500 bg-slate-50 border-t border-slate-100">
+            <svg class="w-12 h-12 mb-3 text-slate-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636"></path></svg>
+            <strong class="text-amber-600 text-base mb-1 font-medium">当前包不可比较</strong>
+            <div class="text-sm">${humanizeBlockReason(diff.reason)}</div>
+          </div>`;
+        return;
+      }
+      container.innerHTML = '<div id="diff-editor-container" class="h-full w-full overflow-hidden bg-white"></div>';
+      mountDiff({
+        ...diff,
+        compare_type: 'json',
+        current_text: formatJson5Like(detail.request_body_text),
+        previous_text: formatJson5Like(diff.previous_text),
+      });
+    }
+
+    function mountSingleEditor(content) {
+      const container = document.getElementById('detail-main-panel');
+      if (!container || !state.monacoReady) return;
+      disposeDiffEditor();
+      container.innerHTML = '<div id="single-editor-container" class="h-full w-full overflow-hidden bg-white"></div>';
+      const editorContainer = document.getElementById('single-editor-container');
+      if (!editorContainer) return;
+
+      if (state.detailEditor) {
+        state.detailEditor.dispose();
+      }
+      if (state.detailEditorModel) {
+        state.detailEditorModel.dispose();
+      }
+
+      state.detailEditorModel = monaco.editor.createModel(content.text, content.language);
+      state.detailEditor = monaco.editor.create(editorContainer, {
+        value: content.text,
+        language: content.language,
+        theme: 'vs',
+        fontSize: 14,
+        minimap: { enabled: false },
+        automaticLayout: true,
+        scrollBeyondLastLine: false,
+        wordWrap: 'on',
+        wrappingStrategy: 'advanced',
+        readOnly: true,
+        lineNumbers: 'on',
+        renderLineHighlight: 'line',
+      });
+      state.detailEditor.setModel(state.detailEditorModel);
+
+      if (!state.resizeObserver) {
+        state.resizeObserver = new ResizeObserver(() => {
+          if (state.diffEditor) {
+            state.diffEditor.layout();
+          }
+          if (state.detailEditor) {
+            state.detailEditor.layout();
+          }
+        });
+      }
+      state.resizeObserver.observe(editorContainer);
+    }
+
+    function disposeDiffEditor() {
+      if (state.diffEditor) {
+        state.diffEditor.dispose();
+        state.diffEditor = null;
+      }
+      if (state.diffOriginalModel) {
+        state.diffOriginalModel.dispose();
+        state.diffOriginalModel = null;
+      }
+      if (state.diffModifiedModel) {
+        state.diffModifiedModel.dispose();
+        state.diffModifiedModel = null;
+      }
+    }
+
+    function disposeDetailEditor() {
+      if (state.detailEditor) {
+        state.detailEditor.dispose();
+        state.detailEditor = null;
+      }
+      if (state.detailEditorModel) {
+        state.detailEditorModel.dispose();
+        state.detailEditorModel = null;
+      }
+    }
+
+    // ========== EXACT SAME DIFF IMPLEMENTATION ==========
+    function mountDiff(diff) {
+      if (!state.monacoReady) return;
+      disposeDetailEditor();
+
+      const container = document.getElementById('diff-editor-container');
+      if (!container) return;
+
+      disposeDiffEditor();
+
+      // Changed theme to light mode
+      const commonOptions = {
+        theme: 'vs',
+        fontSize: 14,
+        minimap: { enabled: false },
+        automaticLayout: true,
+        scrollBeyondLastLine: false,
+        wordWrap: 'on',
+        readOnly: true,
+      };
+
+      state.diffEditor = monaco.editor.createDiffEditor(container, {
+        ...commonOptions,
+        originalEditable: false,
+        renderSideBySide: true,
+        ignoreTrimWhitespace: false,
+        diffWordWrap: 'on',
+        useInlineViewWhenSpaceIsLimited: false,
+        renderSideBySideInlineBreakpoint: 0,
+      });
+
+      state.diffOriginalModel = monaco.editor.createModel(diff.previous_text, diff.compare_type === 'json' ? 'json' : 'plaintext');
+      state.diffModifiedModel = monaco.editor.createModel(diff.current_text, diff.compare_type === 'json' ? 'json' : 'plaintext');
+      state.diffEditor.setModel({
+        original: state.diffOriginalModel,
+        modified: state.diffModifiedModel,
+      });
+
+      // Resize observer to handle drawer animations and window resizes
+      if (!state.resizeObserver) {
+        state.resizeObserver = new ResizeObserver(() => {
+          if (state.diffEditor) {
+            state.diffEditor.layout();
+          }
+          if (state.detailEditor) {
+            state.detailEditor.layout();
+          }
+        });
+      }
+      state.resizeObserver.observe(container);
+
+      setTimeout(() => {
+        const wrapConfig = {
+          wordWrap: 'on',
+          wordWrapColumn: 0,
+          wrappingStrategy: 'advanced',
+        };
+
+        state.diffEditor.updateOptions({
+          wordWrap: 'on',
+          diffWordWrap: 'on',
+        });
+
+        state.diffEditor.getOriginalEditor().updateOptions(wrapConfig);
+        state.diffEditor.getModifiedEditor().updateOptions(wrapConfig);
+      }, 50);
+
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          state.diffEditor.layout();
+          const currentModel = state.diffEditor.getModel();
+          if (currentModel) {
+            state.diffEditor.setModel(currentModel);
+          }
+        }, 50);
+      });
+    }
+
+    function formatRatio(value) {
+      return `${(value * 100).toFixed(1)}%`;
+    }
+
+    function humanizeBlockReason(reason) {
+      switch (reason) {
+        case 'gap_exceeds_4_minutes':
+          return '超过 4 分钟，不参与比较';
+        case 'missing_previous':
+          return '没有前一个包';
+        default:
+          return reason;
+      }
+    }
+
+    function getDetailViewContent(detail, view) {
+      switch (view) {
+        case 'response_body':
+          return {
+            type: 'code',
+            language: 'javascript',
+            text: formatJson5Like(extractFinalResponsePayload(detail.response_body_text)),
+          };
+        case 'request_headers':
+          return {
+            type: 'code',
+            language: 'http-request',
+            text: formatRawHttpRequest(detail),
+          };
+        default:
+          return {
+            type: 'code',
+            language: 'javascript',
+            text: formatJson5Like(detail.request_body_text),
+          };
+      }
+    }
+
+    function formatRawHttpRequest(detail) {
+      const targetPath = detail.path || '/';
+      const headerLines = parseJsonObject(detail.request_headers_text)
+        .map(([name, value]) => `${name}: ${normalizeHttpHeaderValue(value)}`);
+      return [`${detail.method} ${targetPath} HTTP/1.1`, ...headerLines].join('\n');
+    }
+
+    function buildRawPacketText(detail) {
+      return [
+        '===== Raw Request =====',
+        detail.raw_request_text || buildFallbackRawRequest(detail),
+        '',
+        '===== Raw Response =====',
+        detail.raw_response_text || buildFallbackRawResponse(detail),
+      ].join('\n');
+    }
+
+    function buildFallbackRawRequest(detail) {
+      return [formatRawHttpRequest(detail), '', detail.request_body_text || ''].join('\n');
+    }
+
+    function buildFallbackRawResponse(detail) {
+      const headerLines = parseJsonObject(detail.response_headers_text)
+        .map(([name, value]) => `${name}: ${normalizeHttpHeaderValue(value)}`);
+      return ['HTTP/1.1', ...headerLines, '', detail.response_body_text || ''].join('\n');
+    }
+
+    function parseJsonObject(value) {
+      if (value == null || value === '') {
+        return [];
+      }
+      try {
+        const parsed = JSON.parse(value);
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+          return [];
+        }
+        return Object.entries(parsed);
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function normalizeHttpHeaderValue(value) {
+      if (Array.isArray(value)) {
+        return value.map((item) => String(item)).join(', ');
+      }
+      if (value == null) {
+        return '';
+      }
+      return String(value).replaceAll('\n', ' ');
+    }
+
+    function registerHttpRequestLanguage() {
+      if (monacoHttpLanguageRegistered || typeof monaco === 'undefined') {
+        return;
+      }
+
+      monaco.languages.register({ id: 'http-request' });
+      monaco.languages.setMonarchTokensProvider('http-request', {
+        defaultToken: '',
+        tokenizer: {
+          root: [
+            [/^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT)(\s+)(\S+)(\s+)(HTTP\/\d\.\d)$/, ['keyword.http', '', 'string', '', 'type']],
+            [/^([!#$%&'*+\-.^_`|~0-9A-Za-z]+)(:)(\s*)(.*)$/, ['attribute.name', 'delimiter', '', 'string']],
+            [/^\s*$/, 'white'],
+          ],
+        },
+      });
+      monacoHttpLanguageRegistered = true;
+    }
+
+    function extractFinalResponsePayload(value) {
+      if (value == null || value === '') {
+        return '';
+      }
+
+      const parsedJson = tryParseJson(value);
+      if (parsedJson !== null) {
+        return extractStructuredFinalPayload(parsedJson);
+      }
+
+      const sseEvents = parseSseEvents(String(value));
+      if (sseEvents.length === 0) {
+        return String(value);
+      }
+
+      return extractFinalPayloadFromSseEvents(sseEvents);
+    }
+
+    function tryParseJson(value) {
+      try {
+        return JSON.parse(value);
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function parseSseEvents(value) {
+      const events = [];
+      for (const line of String(value).split(/\r?\n/)) {
+        if (!line.startsWith('data:')) {
+          continue;
+        }
+        const payload = line.slice(5).trim();
+        if (!payload || payload === '[DONE]') {
+          continue;
+        }
+        const parsed = tryParseJson(payload);
+        if (parsed && typeof parsed === 'object') {
+          events.push(parsed);
+        }
+      }
+      return events;
+    }
+
+    function extractStructuredFinalPayload(parsed) {
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return parsed;
+      }
+
+      const summary = createResponseSummary();
+
+      moveStringField(parsed, summary, 'id');
+      moveStringField(parsed, summary, 'model');
+      moveStringField(parsed, summary, 'role');
+      moveStringField(parsed, summary, 'type');
+      moveStringField(parsed, summary, 'stop_reason');
+
+      if (parsed.usage && typeof parsed.usage === 'object') {
+        summary.usage = parsed.usage;
+        delete parsed.usage;
+        const cache = extractCacheSummary(summary.usage);
+        if (cache) {
+          summary.cache = cache;
+        }
+      }
+
+      if (parsed.usageMetadata && typeof parsed.usageMetadata === 'object') {
+        summary.usage = parsed.usageMetadata;
+        delete parsed.usageMetadata;
+        const cache = extractCacheSummary(summary.usage);
+        if (cache) {
+          summary.cache = cache;
+        }
+      }
+
+      if (typeof parsed.output_text === 'string' && parsed.output_text) {
+        summary.content = parsed.output_text;
+        delete parsed.output_text;
+        return finalizeResponseSummary(summary, parsed);
+      }
+
+      if (Array.isArray(parsed.content)) {
+        const text = joinContentText(parsed.content);
+        if (text) {
+          summary.content = text;
+          delete parsed.content;
+          return finalizeResponseSummary(summary, parsed);
+        }
+      }
+
+      if (Array.isArray(parsed.output)) {
+        const text = joinResponsesOutputText(parsed.output);
+        if (text) {
+          summary.content = text;
+          delete parsed.output;
+          return finalizeResponseSummary(summary, parsed);
+        }
+      }
+
+      if (Array.isArray(parsed.candidates) && parsed.candidates.length > 0) {
+        const candidate = parsed.candidates[0];
+        const text = extractGeminiCandidateText(candidate);
+        if (text) {
+          summary.role = candidate?.content?.role || summary.role;
+          summary.content = text;
+          if (candidate?.finishReason != null) {
+            summary.finish_reason = candidate.finishReason;
+          }
+          delete parsed.candidates;
+          return finalizeResponseSummary(summary, parsed);
+        }
+      }
+
+      if (Array.isArray(parsed.choices) && parsed.choices.length > 0) {
+        const choice = parsed.choices[0];
+        const message = choice?.message;
+        if (message && typeof message === 'object') {
+          const content = normalizeMessageContent(message.content);
+          if (content) {
+            summary.role = message.role || summary.role;
+            summary.content = content;
+            if (choice.finish_reason != null) {
+              summary.finish_reason = choice.finish_reason;
+            }
+            delete parsed.choices;
+            return finalizeResponseSummary(summary, parsed);
+          }
+        }
+      }
+
+      return finalizeResponseSummary(summary, parsed);
+    }
+
+    function extractFinalPayloadFromSseEvents(events) {
+      const openAiPayload = collectOpenAiStreamPayload(events);
+      if (openAiPayload) {
+        return openAiPayload;
+      }
+
+      const anthropicPayload = collectAnthropicStreamPayload(events);
+      if (anthropicPayload) {
+        return anthropicPayload;
+      }
+
+      const openAiResponsesPayload = collectOpenAiResponsesStreamPayload(events);
+      if (openAiResponsesPayload) {
+        return openAiResponsesPayload;
+      }
+
+      const geminiPayload = collectGeminiStreamPayload(events);
+      if (geminiPayload) {
+        return geminiPayload;
+      }
+
+      return events[events.length - 1];
+    }
+
+    function collectOpenAiStreamPayload(events) {
+      let role = 'assistant';
+      let text = '';
+      let finishReason = null;
+      let usage = null;
+      let model = null;
+      let id = null;
+      let extras = {};
+
+      for (const event of events) {
+        if (typeof event.id === 'string') {
+          id = event.id;
+        }
+        if (typeof event.model === 'string') {
+          model = event.model;
+        }
+        if (!Array.isArray(event.choices)) continue;
+        extras = mergeUnknownFields(extras, event, ['id', 'model', 'choices', 'usage', 'object', 'created']);
+        for (const choice of event.choices) {
+          if (choice?.delta?.role) {
+            role = choice.delta.role;
+          }
+          const delta = choice?.delta;
+          if (delta && typeof delta.content === 'string') {
+            text += delta.content;
+          }
+          if (choice?.finish_reason != null) {
+            finishReason = choice.finish_reason;
+          }
+        }
+        if (event.usage && typeof event.usage === 'object') {
+          usage = event.usage;
+        }
+      }
+
+      if (!text && !usage && !finishReason && !model) {
+        return null;
+      }
+
+      const payload = createResponseSummary();
+      payload.role = role;
+      payload.content = repairMojibakeText(text);
+      if (id) payload.id = id;
+      if (model) payload.model = model;
+      if (finishReason != null) payload.finish_reason = finishReason;
+      if (usage) {
+        payload.usage = usage;
+        const cache = extractCacheSummary(usage);
+        if (cache) {
+          payload.cache = cache;
+        }
+      }
+      return finalizeResponseSummary(payload, extras);
+    }
+
+    function collectAnthropicStreamPayload(events) {
+      let role = 'assistant';
+      let text = '';
+      let usage = null;
+      let stopReason = null;
+      let model = null;
+      let id = null;
+      let extras = {};
+
+      for (const event of events) {
+        extras = mergeUnknownFields(extras, event, ['type', 'message', 'delta', 'usage', 'index']);
+        if (event.type === 'message_start' && event.message && typeof event.message === 'object') {
+          role = event.message.role || role;
+          if (typeof event.message.id === 'string') {
+            id = event.message.id;
+          }
+          if (typeof event.message.model === 'string') {
+            model = event.message.model;
+          }
+          if (event.message.usage && typeof event.message.usage === 'object') {
+            usage = event.message.usage;
+          }
+        }
+        if (event.type === 'content_block_delta' && event.delta && typeof event.delta.text === 'string') {
+          text += event.delta.text;
+        }
+        if (event.type === 'message_delta') {
+          if (event.usage && typeof event.usage === 'object') {
+            usage = event.usage;
+          }
+          if (typeof event.delta?.stop_reason === 'string') {
+            stopReason = event.delta.stop_reason;
+          }
+        }
+      }
+
+      if (!text && !usage && !stopReason) {
+        return null;
+      }
+
+      const payload = createResponseSummary();
+      payload.role = role;
+      payload.content = repairMojibakeText(text);
+      payload.stop_reason = stopReason;
+      if (id) payload.id = id;
+      if (model) payload.model = model;
+      if (usage) {
+        payload.usage = usage;
+        const cache = extractCacheSummary(usage);
+        if (cache) {
+          payload.cache = cache;
+        }
+      }
+      return finalizeResponseSummary(payload, extras);
+    }
+
+    function collectOpenAiResponsesStreamPayload(events) {
+      let text = '';
+      let usage = null;
+      let model = null;
+      let id = null;
+      let finishReason = null;
+      let extras = {};
+
+      for (const event of events) {
+        extras = mergeUnknownFields(extras, event, ['type', 'response', 'delta', 'item', 'usage']);
+        if (typeof event.response?.id === 'string') {
+          id = event.response.id;
+        }
+        if (typeof event.response?.model === 'string') {
+          model = event.response.model;
+        }
+        if (event.response?.usage && typeof event.response.usage === 'object') {
+          usage = event.response.usage;
+        }
+        if (typeof event.delta === 'string' && event.type === 'response.output_text.delta') {
+          text += event.delta;
+        }
+        if (typeof event.response?.output_text === 'string') {
+          text = event.response.output_text;
+        }
+        if (Array.isArray(event.response?.output)) {
+          const outputText = joinResponsesOutputText(event.response.output);
+          if (outputText) {
+            text = outputText;
+          }
+        }
+        if (typeof event.response?.status === 'string') {
+          finishReason = event.response.status;
+        }
+      }
+
+      if (!text && !usage && !model && !finishReason) {
+        return null;
+      }
+
+      const payload = createResponseSummary();
+      payload.role = 'assistant';
+      payload.content = repairMojibakeText(text);
+      if (id) payload.id = id;
+      if (model) payload.model = model;
+      if (finishReason) payload.finish_reason = finishReason;
+      if (usage) {
+        payload.usage = usage;
+        const cache = extractCacheSummary(usage);
+        if (cache) {
+          payload.cache = cache;
+        }
+      }
+      return finalizeResponseSummary(payload, extras);
+    }
+
+    function collectGeminiStreamPayload(events) {
+      let text = '';
+      let usage = null;
+      let finishReason = null;
+      let extras = {};
+
+      for (const event of events) {
+        extras = mergeUnknownFields(extras, event, ['candidates', 'usageMetadata']);
+        if (event.usageMetadata && typeof event.usageMetadata === 'object') {
+          usage = event.usageMetadata;
+        }
+        if (!Array.isArray(event.candidates)) {
+          continue;
+        }
+        for (const candidate of event.candidates) {
+          const candidateText = extractGeminiCandidateText(candidate);
+          if (candidateText) {
+            text += candidateText;
+          }
+          if (candidate?.finishReason != null) {
+            finishReason = candidate.finishReason;
+          }
+        }
+      }
+
+      if (!text && !usage && !finishReason) {
+        return null;
+      }
+
+      const payload = createResponseSummary();
+      payload.role = 'assistant';
+      payload.content = repairMojibakeText(text);
+      if (finishReason != null) payload.finish_reason = finishReason;
+      if (usage) {
+        payload.usage = usage;
+        const cache = extractCacheSummary(usage);
+        if (cache) {
+          payload.cache = cache;
+        }
+      }
+      return finalizeResponseSummary(payload, extras);
+    }
+
+    function createResponseSummary() {
+      return {};
+    }
+
+    function moveStringField(source, target, field) {
+      if (typeof source[field] === 'string') {
+        target[field] = source[field];
+        delete source[field];
+      }
+    }
+
+    function finalizeResponseSummary(summary, remaining) {
+      const result = { ...summary };
+      const extra = sanitizeExtraFields(remaining);
+      if (extra && Object.keys(extra).length > 0) {
+        result.extra = extra;
+      }
+      return Object.keys(result).length > 0 ? result : remaining;
+    }
+
+    function sanitizeExtraFields(value) {
+      if (!value || typeof value !== 'object') {
+        return null;
+      }
+      if (Array.isArray(value)) {
+        return value.length > 0 ? value : null;
+      }
+      const entries = Object.entries(value).filter(([, item]) => item !== undefined);
+      if (entries.length === 0) {
+        return null;
+      }
+      return Object.fromEntries(entries);
+    }
+
+    function mergeUnknownFields(base, source, excludedKeys) {
+      if (!source || typeof source !== 'object' || Array.isArray(source)) {
+        return base;
+      }
+      const next = { ...base };
+      for (const [key, value] of Object.entries(source)) {
+        if (excludedKeys.includes(key) || value === undefined) {
+          continue;
+        }
+        next[key] = value;
+      }
+      return next;
+    }
+
+    function extractCacheSummary(usage) {
+      if (!usage || typeof usage !== 'object') {
+        return null;
+      }
+      const cachedTokens = nestedValue(usage,
+        ['prompt_tokens_details', 'cached_tokens'],
+        ['input_tokens_details', 'cached_tokens'],
+        ['cache_read_input_tokens'],
+        ['cachedContentTokenCount'],
+        ['cached_tokens']
+      );
+      const totalTokens = nestedValue(usage,
+        ['prompt_tokens'],
+        ['input_tokens'],
+        ['promptTokenCount'],
+        ['total_tokens'],
+        ['totalTokenCount']
+      );
+      if (cachedTokens == null && totalTokens == null) {
+        return null;
+      }
+      return {
+        cached_tokens: cachedTokens,
+        total_tokens: totalTokens,
+      };
+    }
+
+    function nestedValue(source, ...paths) {
+      for (const path of paths) {
+        let current = source;
+        for (const part of path) {
+          if (!current || typeof current !== 'object' || !(part in current)) {
+            current = null;
+            break;
+          }
+          current = current[part];
+        }
+        if (current !== null && current !== undefined) {
+          return current;
+        }
+      }
+      return null;
+    }
+
+    function joinContentText(content) {
+      return content
+        .map((item) => {
+          if (typeof item === 'string') return item;
+          if (item && typeof item === 'object' && typeof item.text === 'string') {
+            return item.text;
+          }
+          return '';
+        })
+        .filter(Boolean)
+        .join('');
+    }
+
+    function joinResponsesOutputText(output) {
+      return output
+        .map((item) => {
+          if (!item || typeof item !== 'object') return '';
+          if (typeof item.output_text === 'string') return item.output_text;
+          if (typeof item.text === 'string') return item.text;
+          if (Array.isArray(item.content)) return joinContentText(item.content);
+          return '';
+        })
+        .filter(Boolean)
+        .join('');
+    }
+
+    function extractGeminiCandidateText(candidate) {
+      const parts = candidate?.content?.parts;
+      if (!Array.isArray(parts)) {
+        return '';
+      }
+      return parts
+        .map((part) => part && typeof part.text === 'string' ? part.text : '')
+        .filter(Boolean)
+        .join('');
+    }
+
+    function normalizeMessageContent(content) {
+      if (typeof content === 'string') {
+        return repairMojibakeText(content);
+      }
+      if (Array.isArray(content)) {
+        return repairMojibakeText(joinContentText(content));
+      }
+      return '';
+    }
+
+    function repairMojibakeText(value) {
+      if (typeof value !== 'string' || !looksLikeMojibake(value)) {
+        return value;
+      }
+      try {
+        const bytes = Uint8Array.from(Array.from(value, (char) => char.charCodeAt(0) & 0xff));
+        const repaired = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+        return repaired;
+      } catch (_error) {
+        return value;
+      }
+    }
+
+    function looksLikeMojibake(value) {
+      return /[ÃÂæåäçéèêëîïôöûüœøßðñ]/.test(value);
+    }
+
+    function formatJson5Like(value) {
+      if (value == null || value === '') {
+        return '';
+      }
+      if (typeof value === 'object') {
+        return stringifyJson5Like(value, 0);
+      }
+      try {
+        const parsed = JSON.parse(value);
+        return stringifyJson5Like(parsed, 0);
+      } catch (_error) {
+        return preserveMultilineText(String(value));
+      }
+    }
+
+    function stringifyJson5Like(value, depth) {
+      if (value === null) return 'null';
+      if (Array.isArray(value)) {
+        if (value.length === 0) return '[]';
+        const indent = '  '.repeat(depth);
+        const childIndent = '  '.repeat(depth + 1);
+        const items = value.map((item) => `${childIndent}${stringifyJson5Like(item, depth + 1)}`);
+        return `[\n${items.join(',\n')}\n${indent}]`;
+      }
+      if (typeof value === 'object') {
+        const entries = Object.entries(value);
+        if (entries.length === 0) return '{}';
+        const indent = '  '.repeat(depth);
+        const childIndent = '  '.repeat(depth + 1);
+        const lines = entries.map(([key, item]) => `${childIndent}${formatObjectKey(key)}: ${stringifyJson5Like(item, depth + 1)}`);
+        return `{\n${lines.join(',\n')}\n${indent}}`;
+      }
+      if (typeof value === 'string') {
+        return formatStringValue(value);
+      }
+      if (typeof value === 'number' || typeof value === 'boolean') {
+        return String(value);
+      }
+      return JSON.stringify(value);
+    }
+
+    function formatObjectKey(key) {
+      return /^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key);
+    }
+
+    function formatStringValue(value) {
+      if (value.includes('\n')) {
+        return `"""\n${value}\n"""`;
+      }
+      return JSON.stringify(value);
+    }
+
+    function preserveMultilineText(value) {
+      if (!value.includes('\n')) {
+        return value;
+      }
+      return `"""\n${value}\n"""`;
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;');
+    }
+  </script>
+</body>
+</html>

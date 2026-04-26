@@ -1,0 +1,36 @@
+# Local runtime data
+data/
+state/
+.run/
+*.log
+.mcp-ssh.lock
+
+# Python environment and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local environment and secret material
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+
+# Local Sisyphus working artifacts
+.sisyphus/tmp/
+.sisyphus/handoff/
+.sisyphus/evidence/
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
