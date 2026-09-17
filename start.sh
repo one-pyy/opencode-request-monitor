@@ -6,6 +6,9 @@ WEB_HOST="${OPENCODE_REQUEST_MONITOR_HOST:-127.0.0.1}"
 WEB_PORT="${OPENCODE_REQUEST_MONITOR_PORT:-30500}"
 PROXY_PORT="${OPENCODE_REQUEST_MONITOR_PROXY_PORT:-30499}"
 UPSTREAM_PROXY="${OPENCODE_REQUEST_MONITOR_UPSTREAM_PROXY:-http://127.0.0.1:30084}"
+# 继承环境里的 no_proxy 含 127.0.0.1，而 provider baseURL 就是本机 Plexus，会导致请求绕过
+# mitmproxy。默认清空，只保留需要直连的自机地址。
+PROXY_BYPASS="${OPENCODE_REQUEST_MONITOR_NO_PROXY:-}"
 OPENCODE_ARGS=()
 
 if [[ $# -gt 0 ]]; then
@@ -56,6 +59,8 @@ if [[ ${#OPENCODE_ARGS[@]} -gt 0 ]]; then
   http_proxy="http://${WEB_HOST}:${PROXY_PORT}" \
   https_proxy="http://${WEB_HOST}:${PROXY_PORT}" \
   all_proxy="http://${WEB_HOST}:${PROXY_PORT}" \
+  NO_PROXY="${PROXY_BYPASS}" \
+  no_proxy="${PROXY_BYPASS}" \
   NODE_OPTIONS="${NODE_OPTIONS:+${NODE_OPTIONS} }--use-env-proxy" \
   NODE_EXTRA_CA_CERTS="${NODE_EXTRA_CA_CERTS:-/root/.mitmproxy/mitmproxy-ca-cert.pem}" \
     opencode "${OPENCODE_ARGS[@]}"
