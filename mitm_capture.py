@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import os
 import sys
 import urllib.error
 import urllib.request
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,7 @@ if str(ROOT_DIR) not in sys.path:
 settings = importlib.import_module("app.settings")
 DEFAULT_WEB_HOST = settings.DEFAULT_WEB_HOST
 DEFAULT_WEB_PORT = settings.DEFAULT_WEB_PORT
+logger = logging.getLogger(__name__)
 
 ALLOWED_PATH_PREFIXES = (
     "/v1/chat/completions",
@@ -35,9 +38,20 @@ class PacketCaptureAddon:
             "OPENCODE_REQUEST_MONITOR_API_URL",
             f"http://{DEFAULT_WEB_HOST}:{DEFAULT_WEB_PORT}/api/packets",
         )
+        # 保持抓包写入顺序，同时让网络转发不必等待上传。
+        self._uploads = ThreadPoolExecutor(max_workers=1, thread_name_prefix="opencode-capture")
 
     def load(self, loader) -> None:  # type: ignore[no-untyped-def]
+        # 热加载时也要保留已转发正文，供响应结束后的抓包使用。
+        ctx.options.update(store_streamed_bodies=True)
         ctx.log.info(f"opencode-request-monitor api => {self.api_url}")
+
+    def responseheaders(self, flow: http.HTTPFlow) -> None:
+        if flow.response is None or not should_capture(flow.request.path):
+            return
+        content_type = flow.response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        if content_type == "text/event-stream":
+            flow.response.stream = True
 
     def response(self, flow: http.HTTPFlow) -> None:
         if not should_capture(flow.request.path):
@@ -63,7 +77,17 @@ class PacketCaptureAddon:
             "cached_tokens": cached_tokens,
             "total_tokens": total_tokens,
         }
-        send_to_api(self.api_url, payload)
+        self._uploads.submit(send_to_api, self.api_url, payload).add_done_callback(self._upload_done)
+
+    @staticmethod
+    def _upload_done(upload: Future[None]) -> None:
+        error = upload.exception()
+        if error is not None:
+            logger.warning("failed to send packet to api: %s", error)
+
+    def done(self) -> None:
+        # 脚本重载也会同步调用此钩子，等待后台上报完成再卸载。
+        self._uploads.shutdown(wait=True)
 
 
 def send_to_api(url: str, payload: dict[str, Any]) -> None:
@@ -78,7 +102,7 @@ def send_to_api(url: str, payload: dict[str, Any]) -> None:
         with urllib.request.urlopen(request, timeout=5) as response:
             response.read()
     except urllib.error.URLError as error:
-        ctx.log.warn(f"failed to send packet to api: {error}")
+        logger.warning("failed to send packet to api: %s", error)
 
 
 def normalize_captured_text(value: str | None) -> str | None:

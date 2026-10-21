@@ -41,6 +41,7 @@ OPENCODE_REQUEST_MONITOR_API_URL="http://${WEB_HOST}:${WEB_PORT}/api/packets" se
   mitmdump -q \
   -p "$PROXY_PORT" \
   --mode "upstream:${UPSTREAM_PROXY}" \
+  --set store_streamed_bodies=true \
   -s "$ROOT_DIR/mitm_capture.py" > "$ROOT_DIR/.run/mitm.log" 2>&1 < /dev/null &
 MITM_PID=$!
 
