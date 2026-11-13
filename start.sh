@@ -32,6 +32,9 @@ sleep 1
 
 uv sync
 
+# 在新服务启动前回收已删除抓包记录留下的大块空闲页。
+uv run python -m app.database_maintenance
+
 mkdir -p "$ROOT_DIR/.run"
 
 setsid uv run uvicorn app.main:app --host "$WEB_HOST" --port "$WEB_PORT" > "$ROOT_DIR/.run/web.log" 2>&1 < /dev/null &

@@ -213,6 +213,14 @@ FastAPI 提供数据，前端负责：
 - `start.sh`
 - `mitm_opencode`（安装在 `~/.local/bin`）
 
+### 启动时回收数据库空闲空间
+
+`start.sh` 在停止旧代理和 Web 进程、完成 `uv sync` 后，启动新服务前执行 `uv run python -m app.database_maintenance`。它检查 `data/packets.sqlite3` 的 `page_size × freelist_count`；内部空闲空间严格超过 **1 GiB** 才执行 SQLite `VACUUM`，保留现有记录及顺序状态，将文件内部空闲页归还文件系统。
+
+数据库尚不存在或空闲空间未超过阈值时跳过。数据库锁定或收缩失败会直接报错并阻止继续启动。该维护不删除抓包历史；正常运行中的“清空历史”仍只删除记录，文件收缩在下次启动时按阈值执行。
+
+`tests/test_database_maintenance.py` 使用临时数据库验证缺失文件、阈值边界、实际收缩、记录及自增序列保留，不写运行数据库。
+
 ### 代理链
 
 - OpenCode → `30499`
